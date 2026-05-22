@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Localization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using System.Text;
 using OrchardCore.ContentManagement;
 using OrchardCore.ContentManagement.Records;
 using OrchardCore.DisplayManagement;
@@ -63,6 +64,52 @@ public sealed class SearchController : Controller
     [Route("search/{index?}")]
     public async Task<IActionResult> Search(string index, string terms, PagerSlimParameters pagerParameters)
     {
+        const int maxTermLength = 256;
+
+        static string NormalizeTerms(string value, int maxLength)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            var trimmed = value.Trim();
+            if (trimmed.Length > maxLength)
+            {
+                trimmed = trimmed[..maxLength];
+            }
+
+            var builder = new StringBuilder(trimmed.Length);
+
+            foreach (var character in trimmed)
+            {
+                if (!char.IsControl(character) || char.IsWhiteSpace(character))
+                {
+                    builder.Append(character);
+                }
+            }
+
+            return builder.ToString();
+        }
+
+        static string SanitizeForDisplay(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return value;
+            }
+
+            return value
+                .Replace("<", string.Empty, StringComparison.Ordinal)
+                .Replace(">", string.Empty, StringComparison.Ordinal)
+                .Replace("\"", string.Empty, StringComparison.Ordinal)
+                .Replace("'", string.Empty, StringComparison.Ordinal)
+                .Replace("`", string.Empty, StringComparison.Ordinal);
+        }
+
+        var rawTerms = NormalizeTerms(terms, maxTermLength);
+        var safeTerms = SanitizeForDisplay(rawTerms);
+
         var siteSettings = await _siteService.GetSiteSettingsAsync();
         var hasSearchSettings = siteSettings.TryGet<SearchSettings>(out var searchSettings);
 
@@ -120,14 +167,14 @@ public sealed class SearchController : Controller
             return View();
         }
 
-        if (string.IsNullOrWhiteSpace(terms))
+        if (string.IsNullOrWhiteSpace(rawTerms))
         {
             var model = new SearchIndexViewModel()
             {
                 Index = indexProfile.Name,
                 SearchForm = new SearchFormViewModel()
                 {
-                    Terms = terms,
+                    Terms = safeTerms,
                     Index = indexProfile.Name,
                 },
             };
@@ -158,12 +205,12 @@ public sealed class SearchController : Controller
             size = Convert.ToInt32(pagerParameters.After) + pager.PageSize + 1;
         }
 
-        var searchResult = await searchService.SearchAsync(indexProfile, terms, from, size);
+        var searchResult = await searchService.SearchAsync(indexProfile, rawTerms, from, size);
 
         var searchContext = new SearchContext
         {
             Index = indexProfile,
-            Terms = terms,
+            Terms = safeTerms,
             ContentItemIds = searchResult.ContentItemIds ?? [],
             SearchService = searchService,
             TotalHits = searchResult.ContentItemIds?.Count ?? 0,
@@ -178,7 +225,7 @@ public sealed class SearchController : Controller
                 Index = indexProfile.Name,
                 SearchForm = new SearchFormViewModel()
                 {
-                    Terms = terms,
+                    Terms = safeTerms,
                     Index = indexProfile.Name,
                 },
                 SearchResults = new SearchResultsViewModel()
@@ -237,10 +284,10 @@ public sealed class SearchController : Controller
         var shape = new SearchIndexViewModel()
         {
             Index = indexProfile.Name,
-            Terms = terms,
+            Terms = safeTerms,
             SearchForm = new SearchFormViewModel()
             {
-                Terms = terms,
+                Terms = safeTerms,
                 Index = indexProfile.Name,
             },
             SearchResults = new SearchResultsViewModel()
@@ -253,7 +300,7 @@ public sealed class SearchController : Controller
             },
             Pager = await _shapeFactory.PagerSlimAsync(pager, new Dictionary<string, string>()
             {
-                { nameof(terms), terms },
+                { nameof(terms), safeTerms },
                 { nameof(index), indexProfile.Name },
             }),
         };
